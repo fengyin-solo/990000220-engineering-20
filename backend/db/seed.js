@@ -1,20 +1,21 @@
+const { checkDependencies, stageOk, stageFail } = require('../lib/startup');
+
+// Stage: dependency check
+checkDependencies('deps', ['better-sqlite3']);
+
 const initDb = require('./init');
-const { getDb } = require('./init');
-const path = require('path');
-const fs = require('fs');
+const { getDb, closeDb, DB_PATH } = require('./init');
 
-// Ensure data directory exists
-const dataDir = path.join(__dirname, '..', 'data');
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
+// Stage: database initialization (also creates the data directory)
+let db;
+try {
+  initDb();
+  db = getDb();
+  stageOk('db', `database ready at ${DB_PATH}`);
+} catch (err) {
+  stageFail('db', err.message);
+  process.exit(1);
 }
-
-// Initialize database (create tables)
-initDb();
-const db = getDb();
-
-// Clear existing articles
-db.exec('DELETE FROM articles');
 
 const articles = [
   {
@@ -807,9 +808,14 @@ const insertStmt = db.prepare(`
   VALUES (@title, @body, @summary, @tags, @created_at, @updated_at)
 `);
 
-const insertMany = db.transaction((articles) => {
-  for (const article of articles) {
-    insertStmt.run(article);
+// Stage: seed import. Cleanup and insert run in ONE transaction, so a
+// failed or repeated run never leaves duplicates or a half-cleared
+// table behind; the id sequence is reset to keep results identical.
+const replaceAll = db.transaction((rows) => {
+  db.exec('DELETE FROM articles');
+  db.exec("DELETE FROM sqlite_sequence WHERE name = 'articles'");
+  for (const row of rows) {
+    insertStmt.run(row);
   }
 });
 
@@ -821,8 +827,15 @@ const articlesWithDates = articles.map((article, index) => ({
   updated_at: new Date(now.getTime() - (15 - index) * 86400000).toISOString()
 }));
 
-insertMany(articlesWithDates);
+try {
+  replaceAll(articlesWithDates);
+  stageOk('seed', `seeded ${articles.length} articles (previous rows replaced)`);
+} catch (err) {
+  stageFail('seed', err.message);
+  closeDb();
+  process.exit(1);
+}
 
-console.log(`Seeded ${articles.length} articles successfully`);
-
-db.close();
+// Stage: cleanup
+closeDb();
+stageOk('cleanup', 'database connection closed');

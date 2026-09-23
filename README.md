@@ -98,6 +98,29 @@ npm run dev
 
 The frontend will be available at `http://localhost:5173`
 
+## Startup Stages & Shutdown
+
+Both backend entry points (`npm run dev` / `npm start` / `npm run seed`) log one explicit
+result per stage, so a failed run always names the stage that broke:
+
+| Stage | What it checks | On failure |
+|-------|----------------|------------|
+| `[deps]` | Required packages load (incl. native `better-sqlite3` binding) | Run `npm install` in `backend/` |
+| `[config]` | `PORT` is an integer between 1 and 65535 | Fix the `PORT` env var |
+| `[db]` | `backend/data/` exists and is writable, schema created | Fix directory permissions |
+| `[seed]` | Seed runs as ONE transaction: clear + reset id sequence + insert | Previous data is kept (rolled back) |
+| `[server]` | Port is free and HTTP server is listening | Stop the leftover process or change `PORT` |
+| `[cleanup]` | On `SIGINT`/`SIGTERM`: port released, database closed | Forced exit after 5s timeout |
+
+Notes:
+
+- **Seeding is idempotent**: `npm run seed` always ends with exactly the 15 seed articles
+  (ids 1–15), no matter how often it runs. Cleanup and insert commit or roll back together.
+- **Graceful shutdown**: Ctrl+C or `kill` releases port 3001 and closes the SQLite handle
+  (WAL checkpoint), so restarts — including `node --watch` reloads — never hit a stale port.
+- **Frontend port**: the Vite dev server uses `strictPort`, so if 5173 is taken it fails
+  with a clear error instead of silently switching to another port.
+
 ## Features
 
 - **Article Management**: Create, read, update, and delete blog articles
