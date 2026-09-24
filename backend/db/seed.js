@@ -1,20 +1,18 @@
 const initDb = require('./init');
-const { getDb } = require('./init');
-const path = require('path');
-const fs = require('fs');
+const { getDb, closeDb, DB_PATH } = require('./init');
 
-// Ensure data directory exists
-const dataDir = path.join(__dirname, '..', 'data');
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
-}
+const resetMode = process.argv.includes('--reset') || process.env.SEED_RESET === '1';
 
-// Initialize database (create tables)
-initDb();
-const db = getDb();
+try {
+  // Initialize database (ensure storage + create tables)
+  initDb();
+  const db = getDb();
 
-// Clear existing articles
-db.exec('DELETE FROM articles');
+  // Full reset: wipe existing articles first (historical behavior, opt-in).
+  // Default mode is idempotent: re-running the seed never creates duplicates.
+  if (resetMode) {
+    db.exec('DELETE FROM articles');
+  }
 
 const articles = [
   {
@@ -806,12 +804,7 @@ const insertStmt = db.prepare(`
   INSERT INTO articles (title, body, summary, tags, created_at, updated_at)
   VALUES (@title, @body, @summary, @tags, @created_at, @updated_at)
 `);
-
-const insertMany = db.transaction((articles) => {
-  for (const article of articles) {
-    insertStmt.run(article);
-  }
-});
+const findByTitleStmt = db.prepare('SELECT id FROM articles WHERE title = ?');
 
 // Add timestamps to each article
 const now = new Date();
@@ -821,8 +814,34 @@ const articlesWithDates = articles.map((article, index) => ({
   updated_at: new Date(now.getTime() - (15 - index) * 86400000).toISOString()
 }));
 
-insertMany(articlesWithDates);
+// In idempotent mode, skip articles whose title already exists (per-article
+// rule, so user-created articles are preserved and no duplicates appear).
+let inserted = 0;
+let skipped = 0;
+const runSeed = db.transaction((rows) => {
+  for (const row of rows) {
+    if (!resetMode && findByTitleStmt.get(row.title)) {
+      skipped += 1;
+      continue;
+    }
+    insertStmt.run(row);
+    inserted += 1;
+  }
+});
 
-console.log(`Seeded ${articles.length} articles successfully`);
+runSeed(articlesWithDates);
+
+console.log(
+  resetMode
+    ? `[seed] reset complete: inserted ${inserted} articles`
+    : `[seed] complete: inserted ${inserted}, skipped ${skipped} existing articles`
+);
 
 db.close();
+process.exit(0);
+} catch (err) {
+  const stage = err.stage || 'seed';
+  console.error(`[seed][FAIL:${stage}] ${err.message}`);
+  closeDb();
+  process.exit(1);
+}

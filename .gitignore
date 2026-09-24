@@ -41,3 +41,6 @@ yarn-error.log*
 *.sqlite
 *.sqlite3
 *.pid
+
+# Lifecycle runtime artifacts (pids, logs)
+.run/

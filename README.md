@@ -69,14 +69,62 @@ cd ../frontend
 npm install
 ```
 
-4. **Initialize the database with seed data**
+### Initialize the database with seed data
 
 ```bash
 cd ../backend
 npm run seed
 ```
 
+`npm run seed` is **idempotent**: running it repeatedly never creates duplicate
+articles (existing articles are matched by title and skipped, user-created
+articles are preserved). To wipe and rebuild the article list, use:
+
+```bash
+npm run seed -- --reset
+```
+
+### Lifecycle scripts (recommended)
+
+`scripts/` orchestrates the whole startup-to-shutdown flow. Every stage prints
+an explicit `[OK]` / `[FAIL:<stage>]` result; a failed startup exits non-zero
+and cleans up anything it already started:
+
+| Stage | What is checked / done |
+|-------|------------------------|
+| `config` | `PORT` / `FRONTEND_PORT` are integers in 1–65535 |
+| `port-check` | both ports are free; a *managed* service that is already running is reported, a stale pidfile is reaped, a foreign listener is refused (never killed) |
+| `dependencies` | Node 18+, backend packages (native `better-sqlite3` actually loaded), frontend packages + rollup/esbuild native binaries |
+| `storage` | `backend/data/` exists and is writable |
+| `database` | schema created in `backend/data/blog.db` |
+| `seed` | idempotent article import (see flags below) |
+| `build` | `vite build` (production only) |
+| `backend` / `frontend` | services start and pass an HTTP health check |
+| `cleanup` | on stop or failure, process groups are terminated and ports verified free |
+
+```bash
+# Development (backend: npm run dev / node --watch, frontend: vite)
+scripts/dev.sh                 # init DB + seed + start both
+scripts/dev.sh --no-seed       # skip seed import
+scripts/dev.sh --reset-seed    # wipe articles, then seed
+
+# Production (vite build, backend: npm start, frontend: vite preview)
+scripts/prod.sh
+scripts/prod.sh --no-build     # reuse existing frontend/dist
+scripts/prod.sh --no-seed
+
+# Inspect / stop
+scripts/status.sh
+scripts/stop.sh                # graceful, idempotent; verifies ports are freed
+scripts/stop.sh --purge        # also remove .run/ logs and pidfiles
+```
+
+Environment variables: `PORT` (backend, default `3001`) and `FRONTEND_PORT`
+(default `5173`). Runtime artifacts (pids, logs) live in `.run/`.
+
 ### Running the Application
+
+The individual npm commands still work exactly as before.
 
 1. **Start the backend server (port 3001)**
 
@@ -85,7 +133,10 @@ cd backend
 npm run dev
 ```
 
-The API server will start at `http://localhost:3001`
+The API server will start at `http://localhost:3001`. Startup is staged
+(config → dependencies → storage/database → listen); a failure prints the
+stage, e.g. `[server][FAIL:storage] ...`, and exits non-zero. SIGINT/SIGTERM
+close the HTTP server and database cleanly.
 
 2. **Start the frontend development server (port 5173)**
 
@@ -130,12 +181,13 @@ The frontend will be available at `http://localhost:5173`
 
 - Server port: `3001` (configurable via `PORT` environment variable)
 - JWT secret: `blog-platform-secret-key` (hardcoded in middleware/auth.js)
-- Database file: `backend/data/blog.db`
+- Database file: `backend/data/blog.db` (created on startup; directory is checked for write access first)
+- Schema only: `node db/init.js`; seed data: `npm run seed` (add `-- --reset` to rebuild articles)
 
 ### Frontend
 
-- Dev server port: `5173`
-- API proxy: `/api` requests are proxied to `http://localhost:3001`
+- Dev server port: `5173` (configurable via `FRONTEND_PORT`)
+- API proxy: `/api` requests are proxied to `http://localhost:$PORT` (default `http://localhost:3001`) in both `vite` dev and `vite preview`
 
 ## Build for Production
 
